@@ -11,6 +11,7 @@ num_epochs = 10000
 embedding_dim = 128
 num_heads = 4
 dropout_rate = 0.1
+num_blocks = 4
 
 ds = load_dataset("minnbanya/nlp-a2-sherlock")
 # Concatenate all the text in the train and validation sets
@@ -88,11 +89,17 @@ class SelfAttention(nn.Module):
 # Each head outputs a vector of size embedding_dim // num_heads
 class MultiAttentionHead(nn.Module):
     def __init__(self, head_size):
-        super().__init__()
+        super().__init__()        
+
+        # Multiple Self Attention Heads
         self.attention_heads = nn.ModuleList([SelfAttention(embedding_dim // num_heads) for _ in range(num_heads)])
+        # Projection layer for additional processing of the output of the attention heads.
+        self.projection = nn.Linear(embedding_dim, embedding_dim)
+        self.dropout = nn.Dropout(dropout_rate)
     
     def forward(self, x):
         x = torch.cat([head(x) for head in self.attention_heads], dim=2)
+        x = self.dropout(self.projection(x))
         return x
 
 # Feed Forward Network to process the output of the attention heads.
@@ -109,22 +116,44 @@ class FeedForward(nn.Module):
     def forward(self, x):
         return self.ffwd(x)
 
+# Each Transformer Block consists of a Multi Attention Head and a Feed Forward Network.
+# It also has a Layer Normalization layer to normalize the output of the Multi Attention Head and the Feed Forward Network
+# Residual connections are used to add the output of the Multi Attention Head and the Feed Forward Network to the input.
+class TransformerBlock(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.attention_heads = MultiAttentionHead(embedding_dim // num_heads)
+        self.feed_forward = FeedForward()
+        self.norm1 = nn.LayerNorm(embedding_dim)
+        self.norm2 = nn.LayerNorm(embedding_dim)
+
+    def forward(self, x):
+        # Residual connection is added to the output of the Multi Attention Head and the Feed Forward Network.
+        x = self.norm1(x + self.attention_heads(x))
+        x = self.norm2(x + self.feed_forward(x))
+        return x
+
+# The Transformer model consists of an Embedding layer, Positional Embedding layer, Transformer Blocks, and a Linear layer.
 class Transformer(nn.Module):
     def __init__(self, vocab_size, context_size):
         super().__init__()
+        # Embedding Layer to convert the tokens to vectors.
         self.embedding = nn.Embedding(vocab_size, embedding_dim)
+        # Poistional Embedding Layer to add the position of the tokens to the vectors.
         self.positional_embedding = nn.Embedding(context_size, embedding_dim)
-        self.attention_heads = MultiAttentionHead(embedding_dim // num_heads)
-        self.feed_forward = FeedForward()
+        # Transformer Blocks to process the context of the input data.
+        self.block = nn.Sequential(*[TransformerBlock() for _ in range(num_blocks)])
+        self.layer_norm = nn.LayerNorm(embedding_dim)
         self.linear = nn.Linear(embedding_dim, vocab_size)
 
     def forward(self, x):
         _, T = x.shape
         token_embed = self.embedding(x)
+        # Calculate the positionial embedding for the input data.
         position_emb = self.positional_embedding(torch.arange(T, device=device))
         x = token_embed + position_emb
-        x = self.attention_heads(x)
-        x = self.linear(x)
+        x = self.block(x)
+        x = self.linear(self.layer_norm(x))
         return x
 
 
