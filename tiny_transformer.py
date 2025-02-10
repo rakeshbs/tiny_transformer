@@ -1,17 +1,24 @@
 import torch
 import torch.nn as nn
 from datasets import load_dataset
+import os
 
+# File path for saving the model
+MODEL_PATH = "tiny_transformer.pth"
+
+#Config
 device = torch.device("mps")
+torch.set_default_dtype(torch.bfloat16)
+#
 # Network Parameters
-batch_size = 64
-learning_rate = 1e-3
-context_size = 128
 num_epochs = 10000
-embedding_dim = 128
-num_heads = 4
-dropout_rate = 0.1
-num_blocks = 4
+batch_size = 64
+learning_rate = 3e-4
+dropout_rate = 0.2
+context_size = 256
+embedding_dim = 384
+num_heads = 6
+num_blocks = 6
 
 ds = load_dataset("minnbanya/nlp-a2-sherlock")
 # Concatenate all the text in the train and validation sets
@@ -65,6 +72,7 @@ class SelfAttention(nn.Module):
         self.key = nn.Linear(embedding_dim, head_size)
         self.value = nn.Linear(embedding_dim, head_size)
         self.register_buffer("tril", torch.tril(torch.ones(context_size, context_size).to(device)))
+        self.dropout = nn.Dropout(dropout_rate)
 
     def forward(self, x):
         _, T, _ = x.shape
@@ -80,6 +88,8 @@ class SelfAttention(nn.Module):
         attention = attention.masked_fill(self.tril[:T, :T]== 0, float("-inf"))
         # softmax is applied to the attention weights to get the final attention weights.
         attention = torch.nn.functional.softmax(attention, dim=-1)
+        # Dropout is applied to the attention weights
+        attention = self.dropout(attention)
         # The attention weights are multiplied with the value vector to get the final output.
         output = torch.matmul(attention, v)
         return output
@@ -157,22 +167,56 @@ class Transformer(nn.Module):
         return x
 
 
-# Function to train the model
+# Function to save the model
+def save_model(model, optimizer, epoch, loss):
+    checkpoint = {
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'epoch': epoch,
+        'loss': loss
+    }
+    torch.save(checkpoint, MODEL_PATH)
+    print(f"Model saved at epoch {epoch} with loss {loss:.4f}")
+
+# Function to load the model
+def load_model(model, optimizer):
+    if os.path.exists(MODEL_PATH):
+        checkpoint = torch.load(MODEL_PATH, map_location=device)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        start_epoch = checkpoint['epoch']
+        loss = checkpoint['loss']
+        print(f"Model loaded from epoch {start_epoch} with loss {loss:.4f}")
+        return model, optimizer, start_epoch, loss
+    else:
+        print("No saved model found. Training from scratch.")
+        return model, optimizer, 0, None
+
+# Function to train the model and save it
 def train(model):
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
     loss_fn = nn.CrossEntropyLoss()
+
+    # Load model if saved
+    model, optimizer, start_epoch, _ = load_model(model, optimizer)
+
     print("Training started")
-    for epoch in range(num_epochs):
+    for epoch in range(start_epoch, num_epochs):  # Continue training from last saved epoch
         x, y = get_batch_data()
-        x = x.to(device)
-        y = y.to(device)
+        x, y = x.to(device), y.to(device)
+
         output = model(x)
         loss = loss_fn(output.view(-1, vocab_size), y.view(-1))
+
         loss.backward()
         optimizer.step()
         optimizer.zero_grad()
+
+        # Save model every 100 epochs
         if epoch % 100 == 0:
-            print(f"Epoch: {epoch}, Loss: {loss.item()}")
+            print(f"Epoch: {epoch}, Loss: {loss.item():.4f}")
+        if epoch % 1000 == 0:
+            save_model(model, optimizer, epoch, loss.item())
 
 # Function to validate the model
 def validate(model):
@@ -186,6 +230,7 @@ def validate(model):
 
 #Function to generate text from the model
 def generate(model, start_text, num_chars):
+    print(start_text, end="")
     chars = torch.tensor(encode(start_text)).to(device)
     chars = chars.view(1, len(chars))
     for i in range(num_chars):
@@ -204,4 +249,4 @@ model.train()
 train(model)
 with torch.no_grad():
     validate(model)
-    generate(model, "Sherlock Holmes", 100)
+    generate(model, "Sherlock Holmes", 1000)
