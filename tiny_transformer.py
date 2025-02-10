@@ -10,6 +10,7 @@ context_size = 128
 num_epochs = 10000
 embedding_dim = 128
 num_heads = 4
+dropout_rate = 0.1
 
 ds = load_dataset("minnbanya/nlp-a2-sherlock")
 # Concatenate all the text in the train and validation sets
@@ -84,6 +85,7 @@ class SelfAttention(nn.Module):
 
 # Multi Attention Head to process the context of input data. 
 # Each head processes the context differently and the outputs are concatenated to get the final output.
+# Each head outputs a vector of size embedding_dim // num_heads
 class MultiAttentionHead(nn.Module):
     def __init__(self, head_size):
         super().__init__()
@@ -93,12 +95,27 @@ class MultiAttentionHead(nn.Module):
         x = torch.cat([head(x) for head in self.attention_heads], dim=2)
         return x
 
+# Feed Forward Network to process the output of the attention heads.
+class FeedForward(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.ffwd = nn.Sequential(
+            nn.Linear(embedding_dim, embedding_dim * 4),
+            nn.ReLU(),
+            nn.Linear(embedding_dim * 4, embedding_dim),
+            nn.Dropout(dropout_rate)
+        )
+
+    def forward(self, x):
+        return self.ffwd(x)
+
 class Transformer(nn.Module):
     def __init__(self, vocab_size, context_size):
         super().__init__()
         self.embedding = nn.Embedding(vocab_size, embedding_dim)
         self.positional_embedding = nn.Embedding(context_size, embedding_dim)
         self.attention_heads = MultiAttentionHead(embedding_dim // num_heads)
+        self.feed_forward = FeedForward()
         self.linear = nn.Linear(embedding_dim, vocab_size)
 
     def forward(self, x):
