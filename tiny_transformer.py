@@ -9,6 +9,7 @@ learning_rate = 1e-3
 context_size = 128
 num_epochs = 10000
 embedding_dim = 128
+num_heads = 4
 
 ds = load_dataset("minnbanya/nlp-a2-sherlock")
 # Concatenate all the text in the train and validation sets
@@ -56,12 +57,12 @@ def get_batch_data(data_type="train"):
 
 # Single Attention Head to process the context of input data
 class SelfAttention(nn.Module):
-    def __init__(self, embedding_dim):
+    def __init__(self, head_size):
         super().__init__()
-        self.query = nn.Linear(embedding_dim, embedding_dim)
-        self.key = nn.Linear(embedding_dim, embedding_dim)
-        self.value = nn.Linear(embedding_dim, embedding_dim)
-        self.register_buffer("tril", torch.tril(torch.ones(context_size, context_size)))
+        self.query = nn.Linear(embedding_dim, head_size)
+        self.key = nn.Linear(embedding_dim, head_size)
+        self.value = nn.Linear(embedding_dim, head_size)
+        self.register_buffer("tril", torch.tril(torch.ones(context_size, context_size).to(device)))
 
     def forward(self, x):
         _, T, _ = x.shape
@@ -81,17 +82,31 @@ class SelfAttention(nn.Module):
         output = torch.matmul(attention, v)
         return output
 
-class Transformer(nn.Module):
+# Multi Attention Head to process the context of input data. 
+# Each head processes the context differently and the outputs are concatenated to get the final output.
+class MultiAttentionHead(nn.Module):
+    def __init__(self, head_size):
+        super().__init__()
+        self.attention_heads = nn.ModuleList([SelfAttention(embedding_dim // num_heads) for _ in range(num_heads)])
+    
+    def forward(self, x):
+        x = torch.cat([head(x) for head in self.attention_heads], dim=2)
+        return x
 
+class Transformer(nn.Module):
     def __init__(self, vocab_size, context_size):
-        super(Transformer, self).__init__()
+        super().__init__()
         self.embedding = nn.Embedding(vocab_size, embedding_dim)
-        self.attention_head = SelfAttention(embedding_dim)
+        self.positional_embedding = nn.Embedding(context_size, embedding_dim)
+        self.attention_heads = MultiAttentionHead(embedding_dim // num_heads)
         self.linear = nn.Linear(embedding_dim, vocab_size)
 
     def forward(self, x):
-        x = self.embedding(x)
-        x = self.attention_head(x)
+        _, T = x.shape
+        token_embed = self.embedding(x)
+        position_emb = self.positional_embedding(torch.arange(T, device=device))
+        x = token_embed + position_emb
+        x = self.attention_heads(x)
         x = self.linear(x)
         return x
 
