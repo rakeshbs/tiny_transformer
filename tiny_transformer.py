@@ -7,8 +7,8 @@ device = torch.device("mps")
 batch_size = 64
 learning_rate = 1e-3
 context_size = 128
-num_epochs = 2000
-embedding_dim = 10
+num_epochs = 10000
+embedding_dim = 128
 
 ds = load_dataset("minnbanya/nlp-a2-sherlock")
 # Concatenate all the text in the train and validation sets
@@ -54,16 +54,36 @@ def get_batch_data(data_type="train"):
     x, y = torch.stack(x), torch.stack(y)
     return x, y
 
+class SelfAttention(nn.Module):
+    def __init__(self, embedding_dim):
+        super().__init__()
+        self.query = nn.Linear(embedding_dim, embedding_dim)
+        self.key = nn.Linear(embedding_dim, embedding_dim)
+        self.value = nn.Linear(embedding_dim, embedding_dim)
+        self.register_buffer("tril", torch.tril(torch.ones(context_size, context_size)))
+
+    def forward(self, x):
+        _, T, _ = x.shape
+        q = self.query(x)
+        k = self.key(x)
+        v = self.value(x)
+        attention = torch.matmul(q, k.transpose(-2, -1)) * context_size ** -0.5
+        attention = attention.masked_fill(self.tril[:T, :T]== 0, float("-inf"))
+        attention = torch.nn.functional.softmax(attention, dim=-1)
+        output = torch.matmul(attention, v)
+        return output
 
 class Transformer(nn.Module):
 
     def __init__(self, vocab_size, context_size):
         super(Transformer, self).__init__()
         self.embedding = nn.Embedding(vocab_size, embedding_dim)
+        self.attention_head = SelfAttention(embedding_dim)
         self.linear = nn.Linear(embedding_dim, vocab_size)
 
     def forward(self, x):
         x = self.embedding(x)
+        x = self.attention_head(x)
         x = self.linear(x)
         return x
 
@@ -94,13 +114,16 @@ def validate(model):
     print(f"Validation Loss: {loss.item()}")
 
 def generate(model, start_text, num_chars):
-    chars = encode(start_text)
+    chars = torch.tensor(encode(start_text)).to(device)
+    chars = chars.view(1, len(chars))
     for i in range(num_chars):
-        x = torch.tensor(chars[-context_size:]).unsqueeze(0).to(device)
-        output = model(x)
+        output = model(chars)
         prob = torch.nn.functional.softmax(output[0, -1], dim=0)
         idx = torch.multinomial(prob, num_samples=1)
-        print(decode(idx.cpu().numpy()), end="")
+        char = decode(idx.cpu().numpy())
+        print(char, end="")
+        chars = torch.cat([chars, idx.view(1, 1)], dim=1)
+        chars = chars[:, -context_size:]
 
 
 model = Transformer(len(vocabulary), context_size)
