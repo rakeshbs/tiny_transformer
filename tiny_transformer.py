@@ -54,6 +54,7 @@ def get_batch_data(data_type="train"):
     x, y = torch.stack(x), torch.stack(y)
     return x, y
 
+# Single Attention Head to process the context of input data
 class SelfAttention(nn.Module):
     def __init__(self, embedding_dim):
         super().__init__()
@@ -64,12 +65,19 @@ class SelfAttention(nn.Module):
 
     def forward(self, x):
         _, T, _ = x.shape
+        # This is the attention mechanism.
+        # Each token produces a query, key, and value vector.
         q = self.query(x)
         k = self.key(x)
         v = self.value(x)
+        # The query vector is multiplied with the key vector to get the attention weights.
         attention = torch.matmul(q, k.transpose(-2, -1)) * context_size ** -0.5
+        # The attention weights are masked to prevent the model from looking into the future.
+        # A lower triangular matrix is used to mask the attention weights.
         attention = attention.masked_fill(self.tril[:T, :T]== 0, float("-inf"))
+        # softmax is applied to the attention weights to get the final attention weights.
         attention = torch.nn.functional.softmax(attention, dim=-1)
+        # The attention weights are multiplied with the value vector to get the final output.
         output = torch.matmul(attention, v)
         return output
 
@@ -88,6 +96,7 @@ class Transformer(nn.Module):
         return x
 
 
+# Function to train the model
 def train(model):
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
     loss_fn = nn.CrossEntropyLoss()
@@ -104,6 +113,7 @@ def train(model):
         if epoch % 100 == 0:
             print(f"Epoch: {epoch}, Loss: {loss.item()}")
 
+# Function to validate the model
 def validate(model):
     loss_fn = nn.CrossEntropyLoss()
     x, y = get_batch_data("validation")
@@ -113,6 +123,7 @@ def validate(model):
     loss = loss_fn(output.view(-1, vocab_size), y.view(-1))
     print(f"Validation Loss: {loss.item()}")
 
+#Function to generate text from the model
 def generate(model, start_text, num_chars):
     chars = torch.tensor(encode(start_text)).to(device)
     chars = chars.view(1, len(chars))
