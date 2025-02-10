@@ -2,11 +2,13 @@ import torch
 import torch.nn as nn
 from datasets import load_dataset
 
-
+device = torch.device("mps")
 # Network Parameters
-batch_size = 1
+batch_size = 64
 learning_rate = 1e-3
 context_size = 128
+num_epochs = 2000
+embedding_dim = 10
 
 ds = load_dataset("minnbanya/nlp-a2-sherlock")
 # Concatenate all the text in the train and validation sets
@@ -17,6 +19,7 @@ validation_data = "".join([ds["validation"][i]["text"] for i in range(len(ds["va
 vocabulary = sorted(set(list(train_data + validation_data)))
 print(f"Vocabulary size: {len(vocabulary)}")
 print(f"Vocabulary : {vocabulary}")
+vocab_size = len(vocabulary)
 
 
 # Create the character to token mapping.
@@ -51,4 +54,59 @@ def get_batch_data(data_type="train"):
     x, y = torch.stack(x), torch.stack(y)
     return x, y
 
-x,y = get_batch_data()
+
+class Transformer(nn.Module):
+
+    def __init__(self, vocab_size, context_size):
+        super(Transformer, self).__init__()
+        self.embedding = nn.Embedding(vocab_size, embedding_dim)
+        self.linear = nn.Linear(embedding_dim, vocab_size)
+
+    def forward(self, x):
+        x = self.embedding(x)
+        x = self.linear(x)
+        return x
+
+
+def train(model):
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+    loss_fn = nn.CrossEntropyLoss()
+    print("Training started")
+    for epoch in range(num_epochs):
+        x, y = get_batch_data()
+        x = x.to(device)
+        y = y.to(device)
+        output = model(x)
+        loss = loss_fn(output.view(-1, vocab_size), y.view(-1))
+        loss.backward()
+        optimizer.step()
+        optimizer.zero_grad()
+        if epoch % 100 == 0:
+            print(f"Epoch: {epoch}, Loss: {loss.item()}")
+
+def validate(model):
+    loss_fn = nn.CrossEntropyLoss()
+    x, y = get_batch_data("validation")
+    x = x.to(device)
+    y = y.to(device)
+    output = model(x)
+    loss = loss_fn(output.view(-1, vocab_size), y.view(-1))
+    print(f"Validation Loss: {loss.item()}")
+
+def generate(model, start_text, num_chars):
+    chars = encode(start_text)
+    for i in range(num_chars):
+        x = torch.tensor(chars[-context_size:]).unsqueeze(0).to(device)
+        output = model(x)
+        prob = torch.nn.functional.softmax(output[0, -1], dim=0)
+        idx = torch.multinomial(prob, num_samples=1)
+        print(decode(idx.cpu().numpy()), end="")
+
+
+model = Transformer(len(vocabulary), context_size)
+model = model.to(device)
+model.train()
+train(model)
+with torch.no_grad():
+    validate(model)
+    generate(model, "Sherlock Holmes", 100)
