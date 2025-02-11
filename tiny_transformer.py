@@ -139,8 +139,8 @@ class TransformerBlock(nn.Module):
 
     def forward(self, x):
         # Residual connection is added to the output of the Multi Attention Head and the Feed Forward Network.
-        x = self.norm1(x + self.attention_heads(x))
-        x = self.norm2(x + self.feed_forward(x))
+        x = x + self.attention_heads(self.norm1(x))
+        x = x + self.feed_forward(self.norm2(x))
         return x
 
 # The Transformer model consists of an Embedding layer, Positional Embedding layer, Transformer Blocks, and a Linear layer.
