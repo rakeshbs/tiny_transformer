@@ -2,67 +2,42 @@ import torch
 import torch.nn as nn
 from datasets import load_dataset
 import os
+import torch.nn.functional as F
+from tqdm import tqdm
+from data_utils import CharTokenizer, TinyStoriesDataset
+from torch.utils.data import Dataset, DataLoader
 
 # File path for saving the model
-MODEL_PATH = "tiny_transformer.pth"
+MODEL_PATH = "tiny_transformer"
 
 #Config
 device = torch.device("mps")
 torch.set_default_dtype(torch.bfloat16)
 #
 # Network Parameters
-num_epochs = 10000
+num_epochs = 20
 batch_size = 64
 learning_rate = 3e-4
 dropout_rate = 0.2
-context_size = 256
+context_size = 512
 embedding_dim = 384
 num_heads = 6
 num_blocks = 6
 
-ds = load_dataset("minnbanya/nlp-a2-sherlock")
-# Concatenate all the text in the train and validation sets
-train_data = "".join([ds["train"][i]["text"] for i in range(len(ds["train"]))])
-validation_data = "".join([ds["validation"][i]["text"] for i in range(len(ds["validation"]))])
+# Load dataset
+dataset = load_dataset("roneneldan/TinyStories")
+# Create tokenizer from training split
+tokenizer = CharTokenizer(dataset["train"])
+# Create Train & Validation datasets 
+train_dataset = TinyStoriesDataset(dataset["train"], tokenizer, context_size)
+val_dataset = TinyStoriesDataset(dataset["validation"], tokenizer, context_size)
+# Create DataLoader for Train & Validation datasets
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
-# Extract the vocabulary for making the tokenizer
-vocabulary = sorted(set(list(train_data + validation_data)))
-print(f"Vocabulary size: {len(vocabulary)}")
-print(f"Vocabulary : {vocabulary}")
+# Get vocabulary size
+vocabulary = tokenizer.vocabulary
 vocab_size = len(vocabulary)
-
-
-# Create the character to token mapping.
-char_to_token = {char: idx for idx, char in enumerate(vocabulary)}
-# Create the token to character mapping.
-token_to_char = {idx: char for char, idx in char_to_token.items()}
-
-# Convert the text to a list of tokens
-def encode(text):
-    return [char_to_token[char] for char in text]
-
-# Convert the list of tokens to text
-def decode(encoded_text):
-    return "".join([token_to_char[idx] for idx in encoded_text])
-
-# Encode the train and validation data
-encoded_train_data = encode(train_data)
-encoded_validation_data = encode(validation_data)
-
-# Create batches of encoded data based on the context size and batch size by randomly sampling the encoded data.
-def get_batch_data(data_type="train"):
-    data = encoded_train_data
-    if data_type == "validation":
-        data = encoded_validation_data
-
-    x, y = [], []
-    for _ in range(0, batch_size):
-        idx = torch.randint(0, len(data) - context_size, (1,))
-        x.append(torch.tensor(data[idx:idx + context_size]))
-        y.append(torch.tensor(data[idx + 1:idx + context_size + 1]))
-
-    x, y = torch.stack(x), torch.stack(y)
-    return x, y
 
 # Single Attention Head to process the context of input data
 class SelfAttention(nn.Module):
@@ -75,14 +50,14 @@ class SelfAttention(nn.Module):
         self.dropout = nn.Dropout(dropout_rate)
 
     def forward(self, x):
-        _, T, _ = x.shape
+        _, T, E = x.shape
         # This is the attention mechanism.
         # Each token produces a query, key, and value vector.
         q = self.query(x)
         k = self.key(x)
         v = self.value(x)
         # The query vector is multiplied with the key vector to get the attention weights.
-        attention = torch.matmul(q, k.transpose(-2, -1)) * context_size ** -0.5
+        attention = torch.matmul(q, k.transpose(-2, -1)) * E ** -0.5
         # The attention weights are masked to prevent the model from looking into the future.
         # A lower triangular matrix is used to mask the attention weights.
         attention = attention.masked_fill(self.tril[:T, :T]== 0, float("-inf"))
@@ -152,9 +127,9 @@ class Transformer(nn.Module):
         # Poistional Embedding Layer to add the position of the tokens to the vectors.
         self.positional_embedding = nn.Embedding(context_size, embedding_dim)
         # Transformer Blocks to process the context of the input data.
-        self.block = nn.Sequential(*[TransformerBlock() for _ in range(num_blocks)])
+        self.blocks = nn.Sequential(*[TransformerBlock() for _ in range(num_blocks)])
         self.layer_norm = nn.LayerNorm(embedding_dim)
-        self.linear = nn.Linear(embedding_dim, vocab_size)
+        self.linear = nn.Linear(embedding_dim, vocab_size, bias=False)
 
     def forward(self, x):
         _, T = x.shape
@@ -162,7 +137,7 @@ class Transformer(nn.Module):
         # Calculate the positionial embedding for the input data.
         position_emb = self.positional_embedding(torch.arange(T, device=device))
         x = token_embed + position_emb
-        x = self.block(x)
+        x = self.blocks(x)
         x = self.linear(self.layer_norm(x))
         return x
 
@@ -175,6 +150,7 @@ def save_model(model, optimizer, epoch, loss):
         'epoch': epoch,
         'loss': loss
     }
+    torch.save(checkpoint, MODEL_PATH + f" - {epoch}" + ".pth")
     torch.save(checkpoint, MODEL_PATH)
     print(f"Model saved at epoch {epoch} with loss {loss:.4f}")
 
@@ -192,7 +168,7 @@ def load_model(model, optimizer):
         print("No saved model found. Training from scratch.")
         return model, optimizer, 0, None
 
-# Function to train the model and save it
+# Function to train the model
 def train(model):
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
     loss_fn = nn.CrossEntropyLoss()
@@ -200,47 +176,74 @@ def train(model):
     # Load model if saved
     model, optimizer, start_epoch, _ = load_model(model, optimizer)
 
-    print("Training started")
-    for epoch in range(start_epoch, num_epochs):  # Continue training from last saved epoch
-        x, y = get_batch_data()
-        x, y = x.to(device), y.to(device)
+    if start_epoch < num_epochs:
+        print("Training started")
+        for epoch in range(start_epoch, num_epochs + 1):  # Continue training from last saved epoch
+            total_loss = 0
+            progress_bar = tqdm(train_loader, desc=f"Epoch {epoch}/{num_epochs}", unit="batch")  # tqdm for batch progress
 
-        output = model(x)
-        loss = loss_fn(output.view(-1, vocab_size), y.view(-1))
+            for batch_idx, (x, y) in enumerate(progress_bar):
+                x, y = x.to(device), y.to(device)
 
-        loss.backward()
-        optimizer.step()
-        optimizer.zero_grad()
+                output = model(x)
+                loss = F.cross_entropy(output.view(-1, tokenizer.vocab_size), y.view(-1))
 
-        # Save model every 100 epochs
-        if epoch % 100 == 0:
-            print(f"Epoch: {epoch}, Loss: {loss.item():.4f}")
-        if epoch % 1000 == 0:
-            save_model(model, optimizer, epoch, loss.item())
+                loss.backward()
+                optimizer.step()
+                optimizer.zero_grad()
+
+                total_loss += loss.item()
+
+                # Update tqdm progress bar with batch loss
+                progress_bar.set_postfix(loss=loss.item())
+
+            avg_loss = total_loss / len(train_loader)
+
+            # Print epoch loss
+            print(f"Epoch {epoch}: Loss = {avg_loss:.4f}")
+
+            # Save model every 1000 epochs
+            save_model(model, optimizer, epoch, avg_loss)
 
 # Function to validate the model
 def validate(model):
-    loss_fn = nn.CrossEntropyLoss()
-    x, y = get_batch_data("validation")
-    x = x.to(device)
-    y = y.to(device)
-    output = model(x)
-    loss = loss_fn(output.view(-1, vocab_size), y.view(-1))
-    print(f"Validation Loss: {loss.item()}")
+    model.eval()
+    total_loss = 0
+    with torch.no_grad():
+        for x, y in val_loader:
+            x, y = x.to(device), y.to(device)
+            output = model(x)
+            loss = F.cross_entropy(output.view(-1, tokenizer.vocab_size), y.view(-1))
+            total_loss += loss.item()
 
-#Function to generate text from the model
+    avg_loss = total_loss / len(val_loader)
+    print(f"Validation Loss: {avg_loss:.4f}")
+    model.train()  # Set back to train mode after validation
+
+# Function to generate text from the model
 def generate(model, start_text, num_chars):
+    model.eval()  # Set model to evaluation mode
     print(start_text, end="")
-    chars = torch.tensor(encode(start_text)).to(device)
-    chars = chars.view(1, len(chars))
-    for i in range(num_chars):
-        output = model(chars)
-        prob = torch.nn.functional.softmax(output[0, -1], dim=0)
-        idx = torch.multinomial(prob, num_samples=1)
-        char = decode(idx.cpu().numpy())
-        print(char, end="")
+
+    # Convert input text to token indices
+    tokens = [tokenizer.start_token] + tokenizer.encode(start_text)
+    chars = torch.tensor(tokens).to(device)
+    chars = chars.view(1, -1)  # Reshape to (batch_size=1, sequence_length)
+
+    for _ in range(num_chars):
+        output = model(chars)  # Forward pass
+        prob = torch.nn.functional.softmax(output[0, -1], dim=0)  # Get last token prediction
+        idx = torch.multinomial(prob, num_samples=1)  # Sample from distribution
+        new_token = idx.item()
+        if new_token == tokenizer.end_token:
+            break
+        char = tokenizer.decode([new_token])
+        print(char, end="")  # Print generated character
+
+        # Append new token and keep context_size limit
         chars = torch.cat([chars, idx.view(1, 1)], dim=1)
-        chars = chars[:, -context_size:]
+        chars = chars[:, -context_size:]  # Keep only last `context_size` tokens
+
 
 
 model = Transformer(len(vocabulary), context_size)
@@ -249,4 +252,7 @@ model.train()
 train(model)
 with torch.no_grad():
     validate(model)
-    generate(model, "Sherlock Holmes", 1000)
+    for i in range(5):
+        generate(model, "Once", 512)
+
+
