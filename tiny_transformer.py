@@ -15,29 +15,14 @@ device = torch.device("mps")
 torch.set_default_dtype(torch.bfloat16)
 #
 # Network Parameters
-num_epochs = 20
-batch_size = 64
-learning_rate = 3e-4
+num_epochs = 60
+batch_size = 128
+learning_rate = 1e-4
 dropout_rate = 0.2
 context_size = 512
 embedding_dim = 384
 num_heads = 6
 num_blocks = 6
-
-# Load dataset
-dataset = load_dataset("roneneldan/TinyStories")
-# Create tokenizer from training split
-tokenizer = CharTokenizer(dataset["train"])
-# Create Train & Validation datasets 
-train_dataset = TinyStoriesDataset(dataset["train"], tokenizer, context_size)
-val_dataset = TinyStoriesDataset(dataset["validation"], tokenizer, context_size)
-# Create DataLoader for Train & Validation datasets
-train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
-
-# Get vocabulary size
-vocabulary = tokenizer.vocabulary
-vocab_size = len(vocabulary)
 
 # Single Attention Head to process the context of input data
 class SelfAttention(nn.Module):
@@ -169,7 +154,7 @@ def load_model(model, optimizer):
         return model, optimizer, 0, None
 
 # Function to train the model
-def train(model):
+def train(model, train_loader,tokenizer, learning_rate):
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
     loss_fn = nn.CrossEntropyLoss()
 
@@ -206,7 +191,7 @@ def train(model):
             save_model(model, optimizer, epoch, avg_loss)
 
 # Function to validate the model
-def validate(model):
+def validate(model, val_loader, tokenizer):
     model.eval()
     total_loss = 0
     with torch.no_grad():
@@ -244,15 +229,30 @@ def generate(model, start_text, num_chars):
         chars = torch.cat([chars, idx.view(1, 1)], dim=1)
         chars = chars[:, -context_size:]  # Keep only last `context_size` tokens
 
+def main():
+    # Load dataset
+    dataset = load_dataset("roneneldan/TinyStories")
+    
+    # Create tokenizer from training split
+    all_text = "".join(sample["text"] for sample in dataset["train"])
+    tokenizer = CharTokenizer.from_data(all_text)
+    tokenizer.save_to_file("vocabulary.txt")
+    vocabulary = tokenizer.vocabulary
+    vocab_size = len(vocabulary)
 
+    # Create Train & Validation datasets 
+    train_dataset = TinyStoriesDataset(dataset["train"], tokenizer, context_size)
+    val_dataset = TinyStoriesDataset(dataset["validation"], tokenizer, context_size)
+    # Create DataLoader for Train & Validation datasets
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
-model = Transformer(len(vocabulary), context_size)
-model = model.to(device)
-model.train()
-train(model)
-with torch.no_grad():
-    validate(model)
-    for i in range(5):
-        generate(model, "Once", 512)
+    model = Transformer(len(vocabulary), context_size)
+    model = model.to(device)
+    model.train()
+    train(model, train_loader, tokenizer, learning_rate)
+    with torch.no_grad():
+        validate(model, val_loader, tokenizer)
 
-
+if __name__ == "__main__":
+    main()
