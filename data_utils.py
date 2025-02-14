@@ -8,12 +8,18 @@ EOS_TOKEN = "<EOS>"
 PAD_TOKEN = "<PAD>"
 
 class CharTokenizer:
-    def __init__(self, dataset_split):
+
+    @classmethod
+    def from_data(cls, text):
         """Create a character-based tokenizer from a dataset split."""
-        all_text = "".join(sample["text"] for sample in dataset_split)
-        self.vocabulary = sorted(set(list(all_text)) | {SOS_TOKEN, EOS_TOKEN, PAD_TOKEN})
+        vocabulary = sorted(set(list(text)) | {SOS_TOKEN, EOS_TOKEN, PAD_TOKEN})
+        return cls(vocabulary)
+
+    def __init__(self, vocabulary):
+        self.vocabulary = vocabulary
         self.vocab_size = len(self.vocabulary)
 
+        print(f"Vocabulary size: {self.vocab_size}")
         # Token mapping
         self.char_to_token = {char: idx for idx, char in enumerate(self.vocabulary)}
         self.token_to_char = {idx: char for char, idx in self.char_to_token.items()}
@@ -29,6 +35,17 @@ class CharTokenizer:
     def decode(self, tokens):
         """Convert token indices back into text."""
         return "".join([self.token_to_char[idx] for idx in tokens])
+
+    def save_to_file(self, path):
+        """Save tokenizer to a file."""
+        with open(path, "w") as f:
+            f.write("\n".join(self.vocabulary))
+
+    @classmethod
+    def read_from_file(cls, path):
+        with open(path, "r") as f:
+            string = sorted(set(f.read().splitlines()))
+            return cls(string)
 
 class TinyStoriesDataset(Dataset):
     def __init__(self, dataset_split, tokenizer, context_size):
