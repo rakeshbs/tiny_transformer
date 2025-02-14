@@ -5,3 +5,5 @@ An experiment implementing the encoder part of the transformer architecture from
 The current model was trained stories with less than 512 character long from the Tiny Stories Dataset.
 
 ![Demo](test.gif)
+
+This project is a work in progress.
