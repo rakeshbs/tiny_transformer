@@ -16,7 +16,7 @@ device = torch.device("mps")
 torch.set_default_dtype(torch.bfloat16)
 #
 # Network Parameters
-num_epochs = 60
+num_epochs = 40
 batch_size = 128
 learning_rate = 3e-4
 dropout_rate = 0.2

@@ -28,7 +28,7 @@ vocabulary = tokenizer.vocabulary
 vocab_size = len(vocabulary)
 
 # Function to generate text from the model
-def generate(model, start_text, num_chars, tokenizer, device):
+def generate(model, start_text, tokenizer, device):
     model.eval()  # Set model to evaluation mode
     print(start_text, end="")
 
@@ -67,6 +67,6 @@ with torch.no_grad():
 
     while True:
         input_text = input("Enter starting text: ")
-        generate(model, input_text, 512, tokenizer, device)
+        generate(model, input_text, tokenizer, device)
         print("\n\n")
 
